@@ -1,0 +1,464 @@
+#!/bin/bash
+
+##################################
+# Name of project: bootutil      #
+# Project made by: xblizna00     #
+# About: Script modificating     #
+#       "/boot/loader/entries"   #
+#       powered by Shell         #
+##################################
+
+# default path
+boot_entries_dir="/boot/loader/entries/" 
+
+# change default path (-b <requested_path>)
+# if requested path does not exist, program
+# will end
+if [ "$1" == "-b" ]; then  
+    if [ ! -d "$2" ]; then   
+        echo "This adress does not exist!"  
+        exit 1
+    else                                    
+        boot_entries_dir="$2/" 
+    fi
+    shift 2
+fi
+################################################################
+#                            LIST                              #
+################################################################
+if [ "$1" == "list" ]; then
+    entries=()                  # array that will hold the file
+    filter_kernel=""            # searched "linux" regex 
+    filter_title=""             # searched "title" regex
+    sort_by_key=false           # option -s is demanded/not
+    sort_alphabetically=false   # option -f is demanded/not
+
+    shift                       # everytime we want to start
+                                # by the first argument
+                                # so in whole program shift
+                                # will always means the same
+
+    # we will loop trough every argument
+    # if regex was not entered, it wont
+    # be filtring by the kernel or title
+    # regex but it will show all the files
+    while getopts ":fsk:t:" opt; do
+        case "$opt" in
+            f)
+                sort_alphabetically=true
+                ;;
+            s)
+                sort_by_key=true
+                ;;
+            k)  
+                filter_kernel="$OPTARG" 
+                ;;
+            t)
+                filter_title="$OPTARG"
+                ;;
+            \?)
+                echo "Unknown argument!"
+                exit 1
+                ;;
+        esac
+    done
+
+    # loop trough all files in our path, set
+    # values for title, version and linux
+    # after it checks if every part of a file
+    # is not missing (means title, version, linux)
+    # than they will be loaded into entries array
+    # otherwise it will end the program with an error 
+    # code
+    for file in "$boot_entries_dir"*.conf; do
+        title=$(grep "^title" "$file" | cut -d' ' -f2-)       
+        version=$(grep "^version" "$file" | cut -d' ' -f2-)
+        linux=$(grep "^linux" "$file" | cut -d' ' -f2-)
+
+        if [ -n "$title" ] && [ -n "$version" ] && [ -n "$linux" ]; then   
+            entry="$title ($version, $linux)" 
+
+            if [ -n "$filter_title" ] && [[ ! "$title" =~ $filter_title ]]; then
+                continue
+            fi
+            if [ -n "$filter_kernel" ] && [[ ! "$linux" =~ $filter_kernel ]]; then
+                continue
+            fi
+            entries+=("$entry") 
+        else
+            echo "One or more items missing!"
+            exit 1
+        fi
+    done
+
+    # sorting part for -f and -s
+    # for the -s part i made once again a load
+    # of all values for title, version and linux
+    # but also added a sort_key that is necessary
+    # if need to sort the files by their sort keys
+    ##############################################
+    # in option for sort-key, there are two arrays
+    # that will be loaded by files by the difference
+    # if they own or does not own the sorting-keys
+    # then both arrays will be sorted, firstly
+    # the key array will be sorted by name of the 
+    # sorting key, if there will be two sorting keys
+    # that are identical, it will sort by the title
+    # array without keys will be sorted just by title
+    # than entries array will be filled firstly with 
+    # sorted keys array following by sorted not keys 
+    # array
+    if "$sort_alphabetically"; then
+        mapfile -t entries < <(printf "%s\n" "${entries[@]}" | sort)
+    elif "$sort_by_key"; then
+        keys_arr=()   
+        not_keys_arr=()
+
+        for file in "$boot_entries_dir"*.conf; do
+            sort_key=$(grep "^sort-key" "$file" | cut -d' ' -f2-)
+            title=$(grep "^title" "$file" | cut -d' ' -f2-)
+            version=$(grep "^version" "$file" | cut -d' ' -f2-)
+            linux=$(grep "^linux" "$file" | cut -d' ' -f2-)
+
+            if [ -n "$title" ] && [ -n "$version" ] && [ -n "$linux" ]; then
+                entry="$title ($version, $linux)"
+
+                if [ -n "$filter_title" ] && [[ ! "$title" =~ $filter_title ]]; then
+                    continue
+                fi
+                if [ -n "$filter_kernel" ] && [[ ! "$linux" =~ $filter_kernel ]]; then
+                    continue
+                fi
+
+                new_entry="$sort_key|$title ($version, $linux)"
+                if [ -z "$sort_key" ]; then
+                    not_keys_arr+=("$new_entry")
+                else
+                    keys_arr+=("$new_entry")
+                fi
+            else
+                echo "One or more items missing!"
+                exit 1
+            fi
+        done
+        # array without keys sorted by the title
+        mapfile -t not_keys_arr < <(printf "%s\n" "${not_keys_arr[@]}" | sort -t'|' -k2,2)
+        # array with keys sorted by the key name optionally by the title
+        mapfile -t keys_arr < <(printf "%s\n" "${keys_arr[@]}" | sort -t'|' -k1,1 -k2,2)
+        entries=("${keys_arr[@]}" "${not_keys_arr[@]}")
+        for i in "${!entries[@]}"; do
+            entries[i]=$(echo "${entries[i]}" | cut -d'|' -f2-)
+        done
+    fi
+
+    # print all entries
+    for entry in "${entries[@]}"; do
+       echo "$entry" 
+    done
+################################################################
+#                            REMOVE                            #
+################################################################
+elif [ "$1" == "remove" ]; then
+    title_regex="$2"       # searched title_regex that need to be
+                           # removed, we go trough all files in 
+                           # our path saving every title than 
+                           # compare with our title_regex, if
+                           # they match, the file will be removed
+
+    for i in "$boot_entries_dir"*.conf; do 
+        title_line=$(grep -E "^title.+" "$i") 
+        title=$(echo "$title_line" | cut -d' ' -f2-) 
+
+        if [[ "$title" =~ $title_regex ]]; then 
+            rm "$i"
+        fi
+    done    
+################################################################
+#                            DUPLICATE                         #
+################################################################
+elif [ "$1" == "duplicate" ]; then
+   shift
+
+    entry_file=""
+
+    # if first arguemnt was not starting with -something
+    # than it will be surely <file_path>
+    if [[ "$1" != -* ]]; then
+        entry_file="$1"
+        shift
+    fi
+
+    make_def="0"  
+
+    # check for --make-default argument
+    for arg in "$@"; do
+        if [ "$arg" == "--make-default" ]; then
+            make_def="1"
+            set -- "${@/--make-default/}"
+        fi
+    done
+
+    # if there is not entry_file, we duplicate by the
+    # file that is currently marked as default
+    # so his "vutfit_default x" is set to yes
+    # if there is not entry_file neighter default file
+    # the program ends with and exit 1 option
+    if [ -z "$entry_file" ]; then
+        for file in "$boot_entries_dir"*.conf; do
+            if grep -Eq "^vutfit_default +y" "$file"; then
+                entry_file="$file"
+                break
+            fi
+        done
+
+        if [ -z "$entry_file" ]; then   
+            echo "No default entry found."
+            exit 1
+        fi
+    fi
+
+    # saving the whole file into our array if he exist
+    if [ -f "$entry_file" ]; then
+        entry_data=$(cat "$entry_file")
+    else
+        echo "Error: Entry file was not found."
+        exit 1
+    fi
+
+    # parameter for different options that could have
+    # been entered -k -i -t -d
+    kernel_path=""
+    initram=""
+    new_title=""
+    destination=""
+
+    # going trough all the options that duplicate support
+    # -a and -r are supported inside of the loop, because
+    # they need to be solved separatedly by their order
+    while getopts ":k:i:t:a:r:d:" opt; do
+        case "$opt" in
+            k) kernel_path="$OPTARG" ;;
+            i) initram="$OPTARG" ;;
+            t) new_title="$OPTARG" ;;
+            a)
+                add_option="$OPTARG" #value after -a (before -k -i -t)
+
+                # looks for the line starting with options, load it to data
+                # and delete "options" word from the line
+                options_line=$(grep '^options' <<< "$entry_data")   
+                options_str="${options_line#options }"
+
+                # split the line for each unique string
+                IFS=' ' read -ra existing_options <<< "$options_str"
+
+                # hash-map loaded by keys for every arg
+                declare -A unique_options 
+                for opt in "${existing_options[@]}"; do
+                    unique_options["$opt"]=1
+                done
+
+                unique_options["$add_option"]=1
+                
+                # sort all the options and return to the begining state
+                # of "one-line" options
+                new_options_arr=("${!unique_options[@]}") 
+                new_options_str=$(IFS=' '; echo "${new_options_arr[*]}")
+
+                # if there is a valid line of options it will be replaced by our
+                # new array containing options
+                entry_data=$(sed -E "s|^options.*|options $new_options_str|" <<< "$entry_data")
+
+                # if there was not an option line before, it will be added into a file
+                if [ -z "$options_line" ] && [ -n "$new_options_str" ]; then
+                    entry_data="options $new_options_str"
+                fi
+                # just to make sure there will be only spaces used 
+                entry_data=$(sed -E "s|^options[[:space:]]+|options |" <<< "$entry_data")
+                ;;
+            r)  
+                remove_option="$OPTARG"
+
+                # same as for addition of arguments
+                options_line=$(grep '^options' <<< "$entry_data")
+                options_str="${options_line#options }"
+
+                IFS=' ' read -ra existing_options <<< "$options_str"
+
+                declare -A options_to_keep
+                for opt in "${existing_options[@]}"; do
+                    options_to_keep["$opt"]=1
+                done
+
+                # holding value that has to be removed
+                remove_param="" 
+
+                # option with parameter=value has to be taken
+                # or parameter so for example....
+                # option foo foo=bar haha=foo and our remove
+                # regex = foo will remove only foo and foo=bar
+                # but haha=foo will remain untouched
+                if [[ "$remove_option" == *=* ]]; then
+                    remove_param="$remove_option"
+                    unset "options_to_keep[\"$remove_param\"]"
+                else
+                    remove_param="$remove_option"
+                    for existing_opt in "${existing_options[@]}"; do
+                        existing_param="${existing_opt%=*}"
+                        if [[ "$existing_param" == "$remove_param" ]]; then
+                            unset "options_to_keep[\"$existing_opt\"]"
+                        fi
+                    done
+                fi
+                
+                # retturn of final options line
+                new_options_arr=("${!options_to_keep[@]}")
+                new_options_str=$(IFS=' '; echo "${new_options_arr[*]}")
+
+                # replacement
+                entry_data=$(sed -E "s|^options.*|options $new_options_str|" <<< "$entry_data")
+
+                # no options left, whole line will be removed
+                if [ -z "$new_options_str" ]; then 
+                    entry_data=$(sed -E "s|^options.*||" <<< "$entry_data")
+                fi
+                
+                # removal of spaces (substitution)
+                entry_data=$(sed -E 's/ +/ /g; s/^ *//; s/ *$//' <<< "$entry_data")
+                ;;
+            d)  destination="$OPTARG" ;;
+            \?) echo "Unknown option: $OPTARG" ;;
+        esac
+    done
+    
+
+    # part of substitution for linux, initram and title
+    # by the entered regexes
+    #kernel -k
+    if [ -n "$kernel_path" ]; then
+        entry_data=$(sed -E "s|^linux.*|linux $kernel_path|" <<< "$entry_data")
+    fi
+    #initram -i
+    if [ -n "$initram" ]; then
+        entry_data=$(sed -E "s|^initrd.*|initrd $initram|" <<< "$entry_data")
+    fi
+    #title -t
+    if [ -n "$new_title" ]; then
+        entry_data=$(sed -E "s|^title.*|title $new_title|" <<< "$entry_data")
+    fi
+
+    # if destination was entered at the beggining 
+    # it will be filled with entry_data containing 
+    # whole file information other wise the new
+    # file with unique infix will be created 
+    # (infix = _duplicate_, custom numbers generated
+    # showing the seconds passed from the first 
+    # outcome of UNIX)
+    if [ -n "$destination" ]; then
+            echo "$entry_data" > "$destination"
+    else
+        # unique infix followed by generated numbers
+        new_file="$boot_entries_dir/$(basename "$entry_file" .conf)_duplicate_$(date +%s | tail -c 6).conf"
+
+        echo "$entry_data" > "$new_file"
+        destination="$new_file"
+    fi
+
+    # if --make-default was entered or to be said
+    # if --make-default was set at the beggining
+    # current entry_data will be made as default so
+    # vutfit_default will be set as yes, than every
+    # other file in our path has to be changed
+    # as non default, so as vutfit_default n
+    if [ "$make_def" == "1" ]; then
+        entry_data=$(sed -E "s|^[[:space:]]*vutfit_default[[:space:]].*|vutfit_default y|" <<< "$entry_data")
+
+        echo "$entry_data" > "$destination" #saving the changes
+
+        # setting all files as non_defaults
+        for file in "$boot_entries_dir"/*.conf; do
+            if [ "$file" != "$destination" ]; then
+                sed -i "s/^vutfit_default.*$/vutfit_default n/" "$file"
+            fi
+        done
+    else
+        # if --make-def was not used, new object will be set
+        # as non_default
+        sed -i "s/^vutfit_default.*$/vutfit_default n/" "$destination"
+    fi
+    
+################################################################
+#                            SHOW-DEFAULT                      #
+################################################################
+elif [ "$1" == "show-default" ]; then
+
+    path_only=false;                # option if user want to see
+                                    # only the path of the current
+                                    # default file (used bellow)
+    if [ "$2" == "-f" ]; then
+        path_only=true
+    fi
+    
+
+    file_found=false                # boolean if default file
+                                    # even exist
+
+    # going trough every file in our path looking
+    # for default option set to yes
+    # if the file was found, file_found will be set 
+    # as true and (ln 421.)
+    for i in "$boot_entries_dir"*.conf; do       
+        if grep -Eq "^vutfit_default +y" "$i"; then 
+            file_found=true
+            if [ "$path_only" = true ]; then
+                echo "$i"   # path_only
+            else
+                cat "$i"    # whole_file
+            fi
+            break
+        fi
+    done 
+
+    # if there was not a default file founded
+    if [ "$file_found" = false ]; then
+        echo "File was not found!" 
+        exit 1
+    fi
+################################################################
+#                            MAKE-DEFAULT                      #
+################################################################
+elif [ "$1" == "make-default" ]; then
+
+    entry_file_path="$2"                # path of a file that we 
+                                        # want to set as default     
+
+    if [ ! -f "$entry_file_path" ]; then   # if the path does not 
+        echo "This file does not exist!"   # exist, exit the code
+        exit 1
+    fi
+
+    # otherwise go trough all files in our path
+    # if there is some default file, set him
+    # as non_default (there could be any amout of 0x20
+    # character between vutfit_def and y)
+    for i in "$boot_entries_dir"*.conf; do 
+        if grep -Eq "vutfit_default +y" "$i"; then	
+      	    sed -i 's/vutfit_default y/vutfit_default n/' "$boot_entries_dir"/*.conf
+            break
+        fi
+    done
+
+    # than check if our entered file contains vutfit_default
+    # line if yes it will be rewrited as default
+    # if not it will be added at the end of a file
+    if grep -q "^vutfit_default" "$entry_file_path"; then
+        sed -i 's/^vutfit_default .*/vutfit_default y/' "$entry_file_path"
+    else
+        echo "vutfit_default y" >> "$entry_file_path"  
+    fi
+
+# at least one of the options above has to be entered
+else 
+    echo "Unknown command!"
+fi
+
+exit 0
